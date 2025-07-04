@@ -4,6 +4,12 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
+anyio = "==4.3.0"
+exceptiongroup = "==1.2.0"
+fastapi = "==0.110.2"
+orjson = "==3.10.3"
+pydantic = "==2.7.1"
+uvicorn = {extras = ["standard"], version = "==0.29.0"}
 
 [dev-packages]
 
