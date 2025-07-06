@@ -1,5 +1,7 @@
-from pydantic import BaseModel, Enum, Field
-from typing import Dict, Any, Optional
+from enum import Enum
+from typing import Any, Dict, Optional
+
+from pydantic import BaseModel, Field
 
 
 class Request(BaseModel):

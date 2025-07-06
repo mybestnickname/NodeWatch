@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import ORJSONResponse
 
+from app.api import router
+
 
 def custom_openapi(app: FastAPI):
     if app.openapi_schema:
@@ -40,5 +42,5 @@ def create_app() -> FastAPI:  # TODO: start config
 
     app.openapi = lambda: custom_openapi(app)
 
-    # app.include_router(router.router, prefix='/nodewatch/v1alpha1')
+    app.include_router(router.router, prefix='/nodewatch/v1alpha1')
     return app
