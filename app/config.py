@@ -2,6 +2,8 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.checks.file_integrity.config import Config as CheckFileIntegrityConfig
+
 
 class OneOfSetMixin(BaseModel):
     """Проверить, что в модели ровно одно поле не None."""
@@ -15,12 +17,10 @@ class OneOfSetMixin(BaseModel):
 
 
 class CheckConfig(OneOfSetMixin):
-    pass
+    file_integrity: Optional[CheckFileIntegrityConfig]
     # TODO:
-    # file_integrity: Optional[CheckFileIntegrityConfig]
     # tampering_control: Optional[CheckTamperingControlConfig]
     # fs_free_space: Optional[CheckFsFreeSpaceConfig]
-    # device: Optional[CheckDeviceConfig]
 
 
 class Check(BaseModel):

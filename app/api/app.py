@@ -1,8 +1,15 @@
 from fastapi import FastAPI
+from fastapi.concurrency import asynccontextmanager
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import ORJSONResponse
 
 from app.api import router
+from app.api.utils import find_check_subclasses, resolve_path
+from app.checks.base import Check
+from app.checks.periodic import run_checks
+from app.config import Config
+
+CHECKS_DIR = "app/checks"
 
 
 def custom_openapi(app: FastAPI):
@@ -18,7 +25,7 @@ def custom_openapi(app: FastAPI):
     return app.openapi_schema
 
 
-def create_app() -> FastAPI:  # TODO: start config
+def create_app() -> FastAPI:
     app = FastAPI(
         docs_url='/nodewatch/openapi',
         openapi_url='/nodewatch/openapi.json',
@@ -26,19 +33,7 @@ def create_app() -> FastAPI:  # TODO: start config
     )
 
     # Сохраняем настройки в app.state
-    # TODO Config
-    # config=None
-    # app.state.config = config
-
-    # @app.on_event("startup") # TODO: lifespan event handlers
-    # async def startup_event():
-    #     # Запуск воркеров Throttler-а внутри сервисов или другие необходимые процессы
-    #     pass
-
-    # @app.on_event("shutdown") # TODO: lifespan event handlers
-    # async def shutdown_event():
-    #     # Освобождение ресурсов
-    #     pass
+    app.state.config = Config()
 
     app.openapi = lambda: custom_openapi(app)
 
