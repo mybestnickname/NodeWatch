@@ -1,6 +1,5 @@
 import logging
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -18,49 +17,48 @@ class AfickInternalError(Exception):
 
 class AfickResult(BaseModel):
     status: int
-    time: Optional[str] = None  # время сохранения кеша
-    count: int  # количество изменений
+    time: str | None = None  # cache save time
+    count: int  # number of detected changes
 
 
 class Afick:
-    def __init__(self, throttler: Throttler, afick_wrapper: AfickWrapper):
+    def __init__(self, throttler: Throttler, afick_wrapper: AfickWrapper) -> None:
         self.throttler = throttler
         self.afick_wrapper = afick_wrapper
-        logger.debug("Afick service is running.")
+        logger.debug("Afick service initialised.")
 
-    async def run(self, timeout: float) -> Optional[AfickResult]:
-        logger.debug(f"running afick with timeout: {timeout}")
+    async def run(self, timeout: float) -> AfickResult:
+        logger.debug("Running afick with timeout: %s", timeout)
         try:
-            afick_result = await self.throttler.run_task(self._call_afick_with_result, timeout)
-        except QueueIsFullException:
-            raise AfickInternalError("task queue is full, please wait")
-        except Exception as e:
-            raise AfickInternalError(f"task failed with error: {str(e)}")
+            afick_result = await self.throttler.run_task(self._call_afick_with_result, timeout=timeout)
+        except QueueIsFullException as exc:
+            raise AfickInternalError("task queue is full, please wait") from exc
+        except Exception as exc:
+            raise AfickInternalError(f"task failed with error: {exc}") from exc
 
         if afick_result is None:
-            raise AfickInternalError(f"the task was not completed on time: {timeout}")
+            raise AfickInternalError(f"the task was not completed within {timeout}s")
 
         return AfickResult(**afick_result)
 
-    def _call_afick_with_result(self, timeout) -> dict:
-        """
-        Запрашиваем afick проверку и дожидаемся результата без кэширования.
-        Метод вызывается через self.throttler
+    def _call_afick_with_result(self) -> dict:
+        """Run an afick comparison and return the parsed result (no caching).
+
+        Invoked through :class:`Throttler` so it runs in the thread pool.
         """
         try:
-            afick_task_run_result = self.afick_wrapper.compare()
-        except (Exception, SystemExit):
+            return self.afick_wrapper.compare()
+        except (Exception, SystemExit) as exc:
             logger.exception("afick task call error")
-            raise AfickInternalError
-        return afick_task_run_result
+            raise AfickInternalError(str(exc)) from exc
 
 
 afick_service_instance = Afick(
     throttler=Throttler(max_concurrent_tasks=MAX_CONCURRENT_RUNS),
-    afick_wrapper=AfickWrapper(timeout=AFICK_TIMEOUT)
+    afick_wrapper=AfickWrapper(timeout=AFICK_TIMEOUT),
 )
 
 
-@lru_cache()
+@lru_cache
 def get_afick_service() -> Afick:
     return afick_service_instance

@@ -4,6 +4,7 @@ import re
 import struct
 import time
 from datetime import datetime
+from typing import Any
 
 from app.utils import run_cmd
 
@@ -59,23 +60,24 @@ class AfickWrapper:
         )
         return " ".join(f"{x:02X}" for x in data)
 
-    def parse_info(self, info: str) -> dict:
+    def parse_info(self, info: str) -> dict[str, list[str | int]]:
         field, param = info.split(":", 1)
         field = field.strip()
         values = [p.strip() for p in param.split("\t")]
-        parsed = []
+        parsed: list[str | int] = []
 
         for p in values:
+            value: str | int = p
             if "time" in field or "date" in field:
-                p = self.get_datetime(p)
+                value = self.get_datetime(p)
             elif field in INT_TYPES or "number" in field:
-                p = int(p)
-            parsed.append(p)
+                value = int(p)
+            parsed.append(value)
 
         return {field: parsed}
 
-    def parse_afick_output(self, afick_output: str) -> dict:
-        snmp_data = {
+    def parse_afick_output(self, afick_output: str) -> dict[str, Any]:
+        snmp_data: dict[str, Any] = {
             "status": int(Result.afick_success),
             "time": "",
             "status_str": str(Result.afick_success),
@@ -112,7 +114,7 @@ class AfickWrapper:
         snmp_data["count"] = idx
         return snmp_data
 
-    def compare(self) -> dict:
+    def compare(self) -> dict[str, Any]:
         code, out, err = run_cmd(["sudo", "afick", "--compare"], self.timeout)
         if code != 0:
             logger.error(f"afick exited with code {code}: {err}")

@@ -1,7 +1,9 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Optional
+from functools import partial
+from typing import Any
 
 QUEUE_MAX_LEN = 30
 
@@ -13,99 +15,104 @@ class QueueIsFullException(Exception):
 
 
 class Throttler:
-    def __init__(self, max_concurrent_tasks: int = 1, queue_maxlen: int = QUEUE_MAX_LEN):
+    """Bound the concurrency of (potentially blocking) tasks.
+
+    Tasks are submitted to a bounded queue and processed by a fixed pool of
+    worker coroutines. Synchronous callables run in a thread pool so they never
+    block the event loop. Submissions are rejected when the queue is full and
+    can be given an execution timeout.
+    """
+
+    def __init__(self, max_concurrent_tasks: int = 1, queue_maxlen: int = QUEUE_MAX_LEN) -> None:
         self._max_concurrent_tasks = max_concurrent_tasks
         self.queue_maxlen = queue_maxlen
 
-        self._executor = None
-        self._queue = None
+        self._executor: ThreadPoolExecutor | None = None
+        self._queue: asyncio.Queue | None = None
+        self._workers: list[asyncio.Task] = []
         self._workers_started = False
-        self._tasks_in_queue = []
 
-    async def start_workers(self):
-        """Создание очереди, пула и запуск воркеров для обработки задач"""
+    async def start_workers(self) -> None:
+        """Create the queue, thread pool and worker coroutines (idempotent)."""
+        if self._workers_started:
+            return
         logger.debug(
-            "Throttler is running... "
-            f"max_conc_tasks: {self._max_concurrent_tasks} queue_maxlen: {self.queue_maxlen}."
+            "Starting throttler: max_concurrent_tasks=%s queue_maxlen=%s",
+            self._max_concurrent_tasks,
+            self.queue_maxlen,
         )
-        if not self._executor:
-            self._executor = ThreadPoolExecutor()
+        self._executor = ThreadPoolExecutor(max_workers=self._max_concurrent_tasks)
+        self._queue = asyncio.Queue(maxsize=self.queue_maxlen)
+        self._workers = [asyncio.create_task(self._worker()) for _ in range(self._max_concurrent_tasks)]
+        self._workers_started = True
 
-        if not self._queue:
-            self._queue = asyncio.Queue(maxsize=self.queue_maxlen)
-
-        if not self._workers_started:
-            for _ in range(self._max_concurrent_tasks):
-                # Создание воркеров в текущем цикле
-                asyncio.create_task(self._worker())
-            self._workers_started = True
-
-    async def _worker(self):
-        """Обработка задач из очереди"""
+    async def _worker(self) -> None:
+        """Process tasks from the queue until cancelled."""
+        assert self._queue is not None
         while True:
+            func, args, kwargs, future = await self._queue.get()
             try:
-                if self._queue.empty():
-                    await asyncio.sleep(0.1)
-                    continue
-
-                func, args, kwargs, future = await self._queue.get()
-
                 if future.cancelled():
-                    continue  # Если задача была отменена, пропускаем её
-
+                    continue  # the caller already gave up (e.g. timed out)
                 try:
                     if asyncio.iscoroutinefunction(func):
-                        # если корутина, то вызываем асинхронно
                         result = await func(*args, **kwargs)
                     else:
-                        # синхронную в пуле потоков
-                        loop = asyncio.get_event_loop()
-                        result = await loop.run_in_executor(self._executor, lambda: func(*args, **kwargs))
-                    future.set_result(result)
-                except Exception as e:
-                    logger.error(f"Error while processing task: {e}")
-                    future.set_exception(e)
-                finally:
-                    self._queue.task_done()
+                        loop = asyncio.get_running_loop()
+                        result = await loop.run_in_executor(self._executor, partial(func, *args, **kwargs))
+                    if not future.cancelled():
+                        future.set_result(result)
+                except Exception as exc:  # noqa: BLE001 - surface any task error to the caller
+                    logger.error("Error while processing task: %s", exc)
+                    if not future.cancelled():
+                        future.set_exception(exc)
             except asyncio.CancelledError:
-                break  # Завершаем работу воркера при отмене задачи
-            except Exception as e:
-                logger.error(f"Unexpected error in worker: {e}")
+                raise
+            finally:
+                self._queue.task_done()
 
     async def run_task(
         self,
         func: Callable,
         *args: Any,
-        timeout: Optional[float] = None,
-        **kwargs: Any
-    ) -> Optional[Any]:
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Any | None:
+        """Submit a task and await its result.
+
+        Raises :class:`QueueIsFullException` if the queue is full. Returns
+        ``None`` if the task does not complete within ``timeout`` seconds.
         """
-        Запуск задачи с контролем очереди и возможностью задания таймаута.
-        Если очередь заполнена, то ошибка.
-        Если не успели выполнить за timeout, возвращает None.
-        """
+        if self._queue is None:
+            raise RuntimeError("Throttler workers have not been started.")
         if self._queue.full():
             logger.error("Queue is full. Task will not be added.")
             raise QueueIsFullException("queue is full")
 
         future = asyncio.get_running_loop().create_future()
         await self._queue.put((func, args, kwargs, future))
-        self._tasks_in_queue.append(future)
 
         try:
             if timeout:
                 return await asyncio.wait_for(future, timeout)
-            else:
-                return await future
+            return await future
         except asyncio.TimeoutError:
-            logger.error("task execution timed out.")
-            future.cancel()  # отмена при таймауте
+            logger.error("Task execution timed out after %ss.", timeout)
+            future.cancel()
             return None
 
-    def shutdown(self):
-        """Закрытие пула потоков"""
+    def shutdown(self) -> None:
+        """Cancel workers and shut down the thread pool."""
+        for worker in self._workers:
+            worker.cancel()
+        self._workers = []
+        self._workers_started = False
         if self._executor:
-            self._executor.shutdown(wait=True)
+            self._executor.shutdown(wait=False)
+            self._executor = None
 
-    def __del__(self):
-        self.shutdown()
+    def __del__(self) -> None:
+        try:
+            self.shutdown()
+        except Exception:  # pragma: no cover - best-effort cleanup during GC
+            pass

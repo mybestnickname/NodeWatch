@@ -1,34 +1,37 @@
 import logging
 import os
 import subprocess
-from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
 
-def run_cmd(cmd_line: list, timeout: int = 0, report_err=True) -> Tuple[int, str, str]:
+def run_cmd(cmd_line: list[str], timeout: int = 0, report_err: bool = True) -> tuple[int, str, str]:
     try:
         proc = subprocess.Popen(cmd_line, stdout=subprocess.PIPE, stderr=subprocess.PIPE, preexec_fn=os.setsid)
     except OSError as exc:
         logger.error(exc)
-        return os.EX_SOFTWARE, '', ''
+        return os.EX_SOFTWARE, "", ""
+
     try:
-        output, error = proc.communicate(timeout=timeout)
+        out_bytes, err_bytes = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        output, error = proc.communicate()
-    code = proc.returncode
-    output = output.decode(errors='surrogateescape').strip()
-    error = error.decode(errors='surrogateescape').strip()
+        out_bytes, err_bytes = proc.communicate()
+
+    code = proc.returncode if proc.returncode is not None else os.EX_SOFTWARE
+    output = out_bytes.decode(errors="surrogateescape").strip()
+    error = err_bytes.decode(errors="surrogateescape").strip()
+
     if code == os.EX_OK or not report_err:
         if output:
-            logger.debug(f"stdout: {output}")
+            logger.debug("stdout: %s", output)
         if error:
-            logger.debug(f"stderr: {error}")
+            logger.debug("stderr: %s", error)
     else:
-        logger.error(f"command: {cmd_line} , exit_code: {code}")
+        logger.error("command: %s , exit_code: %s", cmd_line, code)
         if output:
-            logger.error(f"stdout: {output}")
+            logger.error("stdout: %s", output)
         if error:
-            logger.error(f"stderr: {error}")
+            logger.error("stderr: %s", error)
+
     return code, output, error
