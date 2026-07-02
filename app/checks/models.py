@@ -1,17 +1,19 @@
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class Request(BaseModel):
     name: str
-    arguments: Optional[Dict[str, Any]] = None
-    manual: bool
-    nowait: bool
+    arguments: dict[str, Any] | None = None
+    # Whether the run was triggered manually (via the API) or by the scheduler.
+    manual: bool = False
+    # When True the API returns immediately and the check runs in the background.
+    nowait: bool = False
 
 
-class Config(BaseModel):  # must be subclassed
+class Config(BaseModel):  # must be subclassed by each check
     pass
 
 
@@ -21,15 +23,15 @@ class CheckStatus(str, Enum):
 
 
 class Result(BaseModel):
-    timestamp: str = Field(..., description="Check completion time")
-    duration: int = Field(..., description="Check duration in seconds")
+    timestamp: str = Field(..., description="Check completion time (ISO-8601, UTC)")
+    duration: float = Field(..., description="Check duration in seconds")
     status: CheckStatus = Field(..., description="Check result")
-    description: str = Field(..., description="Comment for the user")
+    description: str = Field(..., description="Human-readable comment")
 
 
 class Response(BaseModel):
     name: str
-    arguments: Optional[Dict[str, Any]]
-    result: Optional[Result]
-    manual: bool
-    nowait: bool
+    arguments: dict[str, Any] | None = None
+    result: Result | None = None
+    manual: bool = False
+    nowait: bool = False
