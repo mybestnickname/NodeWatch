@@ -1,9 +1,15 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Config(BaseModel):
-    """TODO"""
-    # high-level options to run afick
-    # any details must be skipped
-    # afick config must be provided separately !
-    # add some params to run afick on subset of configured files
+    """High-level options for the file-integrity check.
+
+    The detailed afick ruleset (which paths to watch, which attributes to
+    compare) lives in afick's own configuration file. Here we only keep the
+    high-level knobs that the service needs.
+    """
+
+    use_sudo: bool = Field(True, description="Run afick via sudo (required when watching root-owned paths)")
+    # Optional comma-separated list of afick aliases to restrict the scan to a
+    # subset of the configured files. Empty means "use the full afick config".
+    aliases: str = Field("", description="Restrict the scan to these afick aliases")
