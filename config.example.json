@@ -1,0 +1,32 @@
+{
+  "state": {
+    "path": "/var/lib/nodewatch/state.db"
+  },
+  "checks": [
+    {
+      "name": "file_integrity",
+      "timeout": 60,
+      "interval": 3600,
+      "jitter": 30,
+      "config": {
+        "file_integrity": {
+          "use_sudo": true,
+          "aliases": ""
+        }
+      }
+    },
+    {
+      "name": "fs_free_space",
+      "timeout": 10,
+      "interval": 300,
+      "jitter": 15,
+      "config": {
+        "fs_free_space": {
+          "path": "/",
+          "min_free_percent": 10.0,
+          "min_free_bytes": null
+        }
+      }
+    }
+  ]
+}

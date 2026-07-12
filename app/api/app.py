@@ -1,78 +1,91 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.concurrency import asynccontextmanager
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import ORJSONResponse
 
 from app.api import router
-from app.api.utils import find_check_subclasses, resolve_path
+from app.api.utils import discover_checks
 from app.checks.base import Check
 from app.checks.periodic import run_checks
-from app.config import Config
+from app.config import Config, load_config
 
-CHECKS_DIR = "app/checks"
+logger = logging.getLogger(__name__)
 
 
-def custom_openapi(app: FastAPI):
+def _setup_logging() -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+
+
+def custom_openapi(app: FastAPI) -> dict:
     if app.openapi_schema:
         return app.openapi_schema
-    openapi_schema = get_openapi(
+    app.openapi_schema = get_openapi(
         title="NodeWatch Handlers",
         version="1.0.0",
-        description="This is the first version of the nodewatch service",
+        description="Lightweight host-integrity monitoring agent.",
         routes=app.routes,
     )
-    app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        docs_url='/nodewatch/openapi',
-        openapi_url='/nodewatch/openapi.json',
-        default_response_class=ORJSONResponse,
-    )
+def _build_check_services(config: Config) -> dict[str, Check]:
+    """Instantiate every discovered check that has a matching config entry.
 
-    # Сохраняем настройки в app.state
-    app.state.config = Config()
+    The config entry is resolved by convention: ``CheckConfig.<name>`` holds the
+    typed config for the check whose ``name`` equals that field.
+    """
+    registry = discover_checks()
+    checks_in_config = {check.name: check for check in config.checks}
 
-    # доступные проверки храним в app.state.checks
-    if getattr(app.state.config, 'checks', None) is None:
-        app.state.checks = {}
-    checks_in_config = {check.name: check for check in app.state.config.checks}
-
-    check_services_with_cfg = {}
-    for check_class in find_check_subclasses(resolve_path(CHECKS_DIR), Check):
-        try:
-            check_services_with_cfg[check_class.name] = check_class(
-                app.state.config.collector,
-                checks_in_config[check_class.name].config,
-                checks_in_config[check_class.name].metadata,
-                checks_in_config[check_class.name].timeout
-            )
-        except KeyError:
+    services: dict[str, Check] = {}
+    for name, check_class in registry.items():
+        check_cfg = checks_in_config.get(name)
+        if check_cfg is None:
+            logger.info("Check %s is available but not configured; skipping.", name)
             continue
+        sub_config = getattr(check_cfg.config, name, None)
+        services[name] = check_class(sub_config, check_cfg.timeout)
+        logger.info("Registered check service: %s", name)
+    return services
 
-    app.state.checks = check_services_with_cfg
+
+def create_app() -> FastAPI:
+    _setup_logging()
+
+    config = load_config()
+    check_services = _build_check_services(config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # STARTUP
-        fi_service = app.state.checks.get('file_integrity')
-        if fi_service:
-            fi_service_afick_throttler = fi_service.afick_service.throttler
-            await fi_service_afick_throttler.start_workers()
-
-        await run_checks(app.state.config.checks, app.state.checks)
+        for service in app.state.checks.values():
+            await service.startup()
+        scheduled_tasks = await run_checks(app.state.config.checks, app.state.checks)
 
         yield
 
         # SHUTDOWN
-        fi_service = app.state.checks.get('file_integrity')
-        if fi_service:
-            fi_service_afick_throttler = fi_service.afick_service.throttler
-            fi_service_afick_throttler.shutdown()
+        for task in scheduled_tasks:
+            task.cancel()
+        for service in app.state.checks.values():
+            await service.shutdown()
 
-    app.openapi = lambda: custom_openapi(app)
+    app = FastAPI(
+        docs_url="/nodewatch/openapi",
+        openapi_url="/nodewatch/openapi.json",
+        default_response_class=ORJSONResponse,
+        lifespan=lifespan,
+    )
 
-    app.include_router(router.router, prefix='/nodewatch/v1alpha1')
+    app.state.config = config
+    app.state.checks = check_services
+
+    app.openapi = lambda: custom_openapi(app)  # type: ignore[method-assign]
+    app.include_router(router.router, prefix="/nodewatch/v1alpha1")
     return app

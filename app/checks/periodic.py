@@ -1,53 +1,56 @@
 import asyncio
 import logging
 import random
-from typing import List
 
-from app.checks.models import CheckStatus, Request
+from app.checks.base import Check as CheckService
+from app.checks.models import CheckStatus, Request, Response
 from app.config import Check
 
 logger = logging.getLogger(__name__)
 
 
-async def periodic_check_runner(check: Check, check_service):
-    start_delay = random.uniform(0, check.jitter)
-    logger.info(f"{check.name} check will be runned in {start_delay} sec")
-    await asyncio.sleep(start_delay)
+def _log_result(response: Response) -> None:
+    result = response.result
+    if result is None:
+        logger.error("Check %s finished without a result. Details: %s", response.name, response.model_dump())
+        return
+    if result.status == CheckStatus.OK:
+        logger.info("Check %s completed successfully. Result: %s", response.name, result.model_dump())
+    else:
+        logger.error("Check %s finished with errors. Result: %s", response.name, result.model_dump())
+
+
+async def periodic_check_runner(check: Check, check_service: CheckService) -> None:
+    """Run a single check forever on its configured interval (with jitter)."""
+    await asyncio.sleep(random.uniform(0, check.jitter))
+    loop = asyncio.get_running_loop()
     while True:
-        logger.info(f"Running check: {check.name}.")
-        start_time = asyncio.get_running_loop().time()
+        logger.info("Running scheduled check: %s", check.name)
+        start_time = loop.time()
         try:
-            check_resp = await check_service.run(Request(name=check.name, nowait=False, manual=False,))
+            response = await check_service.run(Request(name=check.name))
+            _log_result(response)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.error(f"Error occurred for {check.name} check.", exc_info=1)
-            continue
+            logger.exception("Error occurred while running scheduled check %s", check.name)
 
-        check_result = getattr(check_resp, "result", None)
-        if check_result:
-            if check_result.status == CheckStatus.OK:
-                logger.info(f"Check {check_resp.name} has been successfully completed. Result: {check_result.dict()}")
-            else:
-                logger.error(f"Check {check_resp.name} finished with errors. Result: {check_result.dict()}")
-        else:
-            logger.error(f"Check {check_resp.name} finished with errors without result. Details: {check_resp.dict()}")
-
-        elapsed_time = asyncio.get_running_loop().time() - start_time
-        delay = max(0, (check.interval + random.uniform(0, check.jitter)) - elapsed_time)
-        logger.info(
-            f"Elapsed time for {check.name}: {elapsed_time:.2f} seconds. Sleeping for {delay:.2f} seconds."
-        )
+        elapsed = loop.time() - start_time
+        delay = max(0.0, (check.interval + random.uniform(0, check.jitter)) - elapsed)
+        logger.info("Check %s took %.2fs. Next run in %.2fs.", check.name, elapsed, delay)
         await asyncio.sleep(delay)
 
 
-async def run_checks(checks: List[Check], check_services: dict):
+async def run_checks(checks: list[Check], check_services: dict[str, CheckService]) -> list[asyncio.Task]:
+    """Start a background task for every check with a non-zero interval."""
     logger.info("Starting periodic checks.")
-    runned_tasks = []
+    tasks: list[asyncio.Task] = []
     for check in checks:
-        if check.interval != 0:
-            try:
-                check_service = check_services[check.name]
-            except KeyError:
-                logger.error(f"Failed to found service for {check.name} check.")
-                continue
-            runned_tasks.append(asyncio.create_task(periodic_check_runner(check, check_service)))
-    return runned_tasks
+        if check.interval == 0:
+            continue
+        check_service = check_services.get(check.name)
+        if check_service is None:
+            logger.error("No service found for scheduled check %s.", check.name)
+            continue
+        tasks.append(asyncio.create_task(periodic_check_runner(check, check_service)))
+    return tasks
